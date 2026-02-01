@@ -2,8 +2,8 @@
 // 1. CONFIGURATION
 // ================================================================
 const CONFIG = {
-    API_BASE_URL: 'https://backend-api-choc88.vercel.app/api',
-    SHEET_ID: '1F2bTvP1ySUT1q6fzRPQu7UpKNW_ze8GtKkd2rmRUjkI',
+    API_BASE_URL: 'https://backend-api-sriracha.vercel.app/api',
+    SHEET_ID: '1PdYqXkrrRGIv-6cCgOn8VXE6MpQhMlBGpFw7BbfzFbI',
     SHEET_NAME_SUMMARY: 'SUM',
 };
 
@@ -114,9 +114,6 @@ async function fetchAdsData(startDate, endDate) {
 }
 
 async function fetchSalesData() {
-    // Force a cache refresh when sheet ID might have changed
-    allSalesDataCache = [];
-    
     if (allSalesDataCache.length > 0) return allSalesDataCache;
     const sheetUrl = `https://docs.google.com/spreadsheets/d/${CONFIG.SHEET_ID}/gviz/tq?tqx=out:json&sheet=${CONFIG.SHEET_NAME_SUMMARY}`;
     const response = await fetch(sheetUrl);
@@ -280,9 +277,7 @@ function processSalesDataForPeriod(allSalesRows, startDate, endDate) {
             channelBreakdown[channel].revenue += rowRevenue;
         }
     });
-    
-    // <<< FIXED: Updated Total Customers calculation to match previous logic
-    summary.totalCustomers = summary.p1Bills + summary.upP2Bills;
+    summary.totalCustomers = summary.newCustomers + summary.oldCustomers;
     
     const linkedRows = linkP1AndUpP1(filteredRows);
     const upsellPaths = calculateUpsellPaths(linkedRows);
@@ -531,7 +526,7 @@ function renderCampaignsTable(campaigns) {
 
 function renderCategoryChart(categoryData) {
     const chart = charts.categoryRevenue;
-    const topData = categoryData.slice(0, 15).reverse(); // Reverse for horizontal chart
+    const topData = categoryData.slice(0, 15);
     chart.data.labels = topData.map(d => d.name);
     chart.data.datasets[0].data = topData.map(d => d.totalRevenue);
     chart.update();
@@ -791,10 +786,6 @@ function sortAndRenderCampaigns() {
     const { key, direction } = currentSort;
     const searchTerm = ui.campaignSearchInput.value.toLowerCase();
     
-    if (!latestCampaignData) {
-        latestCampaignData = [];
-    }
-
     let filteredData = latestCampaignData.filter(campaign => 
         campaign.name.toLowerCase().includes(searchTerm)
     );
@@ -840,13 +831,13 @@ function renderPopupAds(ads) {
         ui.modalBody.innerHTML = `<p style="text-align: center; grid-column: 1 / -1;">No ads found for this campaign.</p>`;
     } else {
         ui.modalBody.innerHTML = ads
-            .sort((a,b) => (b.insights?.spend || 0) - (a.insights?.spend || 0))
+            .sort((a,b) => (b.insights.spend || 0) - (a.insights.spend || 0))
             .map(ad => {
                 const insights = ad.insights || { spend: 0, impressions: 0, purchases: 0, messaging_conversations: 0, cpm: 0 };
                 return `
                 <div class="ad-card">
                     <div class="ad-card-image">
-                        <img src="${ad.thumbnail_url}" alt="Ad thumbnail" onerror="this.src='https://placehold.co/120x120/0d0c1d/a0a0b0?text=No+Image'">
+                        <img src="${ad.thumbnail_url}" alt="Ad thumbnail" onerror="this.src='https.placehold.co/120x120/0d0c1d/a0a0b0?text=No+Image'">
                     </div>
                     <div class="ad-card-details">
                         <h4>${ad.name}</h4>
@@ -931,19 +922,17 @@ async function main() {
         if (isCompareMode) {
             const compareStartDateStr = ui.compareStartDate.value;
             const compareEndDateStr = ui.compareEndDate.value;
-            if (compareStartDateStr && compareEndDateStr) {
-                fetchPromises.push(fetchAdsData(compareStartDateStr, compareEndDateStr));
-            }
+            fetchPromises.push(fetchAdsData(compareStartDateStr, compareEndDateStr));
         }
         
         const results = await Promise.all(fetchPromises);
 
         const adsResponse = results[0];
         const allSalesRows = results[1];
-        const comparisonAdsResponse = results.length > 2 ? results[2] : null;
+        const comparisonAdsResponse = isCompareMode ? results[2] : null;
 
-         if (!adsResponse || !adsResponse.success) {
-             throw new Error(adsResponse.error || 'Unknown API error from main Ads fetch.');
+         if (!adsResponse.success) {
+             throw new Error(adsResponse.error || 'Unknown API error');
         }
 
         const currentStartDate = new Date(startDateStr + 'T00:00:00');
@@ -954,7 +943,7 @@ async function main() {
         latestFilteredSalesRows = salesData.filteredRows;
         
         let comparisonSalesData = null;
-        if (isCompareMode && comparisonAdsResponse && comparisonAdsResponse.success) {
+        if (isCompareMode && comparisonAdsResponse?.success) {
             const compareStartDate = new Date(ui.compareStartDate.value + 'T00:00:00');
             const compareEndDate = new Date(ui.compareEndDate.value + 'T23:59:59');
             comparisonSalesData = processSalesDataForPeriod(allSalesRows, compareStartDate, compareEndDate);
@@ -963,7 +952,7 @@ async function main() {
             latestComparisonData = null;
         }
         
-        latestCampaignData = adsResponse.data.campaigns || [];
+        latestCampaignData = adsResponse.data.campaigns;
         
         renderFunnelOverview(adsResponse.totals, salesData.summary, comparisonAdsResponse?.totals, comparisonSalesData);
         renderAdsOverview(adsResponse.totals);
@@ -977,11 +966,9 @@ async function main() {
         renderChannelTable(salesData.channelBreakdown);
         renderUpsellPaths(salesData.upsellPaths);
         
-        if (adsResponse.data.dailySpend) {
-            charts.dailySpend.data.labels = adsResponse.data.dailySpend.map(d => `${new Date(d.date).getUTCDate()}/${new Date(d.date).getUTCMonth() + 1}`);
-            charts.dailySpend.data.datasets[0].data = adsResponse.data.dailySpend.map(d => d.spend);
-            charts.dailySpend.update();
-        }
+        charts.dailySpend.data.labels = adsResponse.data.dailySpend.map(d => `${new Date(d.date).getUTCDate()}/${new Date(d.date).getUTCMonth() + 1}`);
+        charts.dailySpend.data.datasets[0].data = adsResponse.data.dailySpend.map(d => d.spend);
+        charts.dailySpend.update();
 
     } catch (err) {
         showError(`${err.message || 'An unexpected error occurred.'}`);
@@ -1009,16 +996,13 @@ document.addEventListener('DOMContentLoaded', () => {
     initializeCharts();
     initializeModal();
     setDefaultDates();
-    // A small delay to ensure date values are rendered before first main() call
-    setTimeout(main, 100);
+    main();
 
     ui.refreshBtn.addEventListener('click', main);
     const dateInputs = [ui.startDate, ui.endDate, ui.compareStartDate, ui.compareEndDate, ui.compareToggle];
     dateInputs.forEach(input => input.addEventListener('change', () => {
         if (ui.startDate.value && ui.endDate.value) {
-            // Debounce main call to prevent rapid firing
-            clearTimeout(window.dateChangeTimeout);
-            window.dateChangeTimeout = setTimeout(main, 300);
+            main();
         }
     }));
 
