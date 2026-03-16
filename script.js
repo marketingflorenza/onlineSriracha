@@ -63,6 +63,31 @@ const getNestedValue = (obj, path) => {
 };
 
 // ================================================================
+// 3b. CUSTOMER HISTORY HELPER
+// ── ตรวจสอบว่าลูกค้ามีประวัติการซื้อที่มียอดชำระจริง
+//    (P1 > 0 หรือ UP_P1 > 0 หรือ UP_P2 > 0) ก่อน startDate หรือไม่
+//    ถ้ามีเฉพาะ P2 lead (ไม่มียอดชำระ) → ถือเป็นลูกค้าใหม่
+// ================================================================
+function hasPaidHistory(custName, custPhone, historyRows) {
+    const C = CONFIG.COLUMN_NAMES;
+    return historyRows.some(h => {
+        const hName  = String(h[C.CUSTOMER] || '').trim();
+        const hPhone = String(h[C.PHONE]    || '').trim();
+
+        // ต้องมียอดชำระจริง — P2 lead อย่างเดียวไม่นับ
+        const hasPaidRevenue =
+            toNumber(h[C.P1])    > 0 ||
+            toNumber(h[C.UP_P1]) > 0 ||
+            toNumber(h[C.UP_P2]) > 0;
+
+        if (!hasPaidRevenue) return false;
+
+        return (custName  !== '' && hName  === custName)  ||
+               (custPhone !== '' && hPhone === custPhone);
+    });
+}
+
+// ================================================================
 // 4. DATA FETCHING
 // ================================================================
 async function fetchAdsData(startDate, endDate) {
@@ -101,13 +126,15 @@ async function fetchSalesData() {
 function processSalesData(rows, startDate, endDate) {
     const C = CONFIG.COLUMN_NAMES;
     const startD = new Date(startDate + 'T00:00:00');
-    const endD = new Date(endDate + 'T23:59:59');
+    const endD   = new Date(endDate   + 'T23:59:59');
 
+    // ── ประวัติก่อนช่วงที่เลือก ──────────────────────────────────
     const historyData = rows.filter(r => {
         const d = parseGvizDate(r[C.DATE]);
         return d && d < startD;
     });
 
+    // ── ข้อมูลในช่วงที่เลือก ─────────────────────────────────────
     const filteredRows = rows.filter(r => {
         const d = parseGvizDate(r[C.DATE]);
         return d && d >= startD && d <= endD;
@@ -120,45 +147,41 @@ function processSalesData(rows, startDate, endDate) {
         newCustomersCount: 0, repeatCustomersCount: 0
     };
 
-    let channels = {};
+    let channels  = {};
     let categories = {};
 
-    const processedNewCust = new Set();
+    const processedNewCust    = new Set();
     const processedRepeatCust = new Set();
 
     filteredRows.forEach(row => {
-        const p1 = toNumber(row[C.P1]);
-        const up1 = toNumber(row[C.UP_P1]);
-        const up2 = toNumber(row[C.UP_P2]);
+        const p1    = toNumber(row[C.P1]);
+        const up1   = toNumber(row[C.UP_P1]);
+        const up2   = toNumber(row[C.UP_P2]);
         const p2Str = String(row[C.P2] || '').trim();
-        const rev = p1 + up1 + up2;
-        const hasRevenue = rev > 0;
+        const rev   = p1 + up1 + up2;
 
-        const custName = String(row[C.CUSTOMER] || '').trim();
-        const custPhone = String(row[C.PHONE] || '').trim();
-        const custKey = `${custName}|${custPhone}`;
+        const custName  = String(row[C.CUSTOMER] || '').trim();
+        const custPhone = String(row[C.PHONE]    || '').trim();
+        const custKey   = `${custName}|${custPhone}`;
 
-        if (p1 > 0) summary.p1Bills++;
+        if (p1  > 0) summary.p1Bills++;
         if (up1 > 0) summary.upp1Bills++;
         if (up2 > 0) summary.upp2Bills++;
         if (p2Str !== '') summary.p2Leads++;
 
-        if (hasRevenue || p2Str !== '') {
-            summary.totalRevenue += rev;
-            summary.p1Revenue += p1;
-            summary.upp1Revenue += up1;
-            summary.upp2Revenue += up2;
+        if (rev > 0 || p2Str !== '') {
+            summary.totalRevenue  += rev;
+            summary.p1Revenue     += p1;
+            summary.upp1Revenue   += up1;
+            summary.upp2Revenue   += up2;
 
             if (p1 > 0 || up2 > 0) summary.totalCustomers++;
 
             if (p1 > 0 || up2 > 0) {
-                const isHistoricallyExisting = historyData.some(h => {
-                    const hName = String(h[C.CUSTOMER] || '').trim();
-                    const hPhone = String(h[C.PHONE] || '').trim();
-                    return (custName !== '' && hName === custName) || (custPhone !== '' && hPhone === custPhone);
-                });
+                // ✅ ตรวจสอบประวัติที่มียอดชำระจริงเท่านั้น
+                const isOldCustomer = hasPaidHistory(custName, custPhone, historyData);
 
-                if (!isHistoricallyExisting) {
+                if (!isOldCustomer) {
                     if (!processedNewCust.has(custKey)) {
                         summary.newCustomersCount++;
                         processedNewCust.add(custKey);
@@ -174,20 +197,20 @@ function processSalesData(rows, startDate, endDate) {
             const ch = row[C.CHANNEL] || 'ไม่ระบุ';
             if (!channels[ch]) channels[ch] = { p1: 0, p2: 0, upP2: 0, newCust: 0, revenue: 0, up2Revenue: 0 };
             if (p1 > 0 && up1 === 0) channels[ch].p1++;
-            if (p2Str !== '') channels[ch].p2++;
-            if (up2 > 0) channels[ch].upP2++;
-            channels[ch].revenue += rev;
+            if (p2Str !== '')        channels[ch].p2++;
+            if (up2 > 0)             channels[ch].upP2++;
+            channels[ch].revenue    += rev;
             channels[ch].up2Revenue += up2;
 
             const cats = String(row[C.CATEGORIES] || '').split(',').map(s => s.trim()).filter(s => s && s !== '999');
             cats.forEach(cat => {
                 if (!categories[cat]) categories[cat] = { name: cat, total: 0, p1B: 0, up1B: 0, up2B: 0, p1Val: 0, up1Val: 0, up2Val: 0 };
                 const count = cats.length || 1;
-                categories[cat].total += rev / count;
-                categories[cat].p1Val += p1 / count;
+                categories[cat].total  += rev / count;
+                categories[cat].p1Val  += p1  / count;
                 categories[cat].up1Val += up1 / count;
                 categories[cat].up2Val += up2 / count;
-                if (p1 > 0) categories[cat].p1B++;
+                if (p1  > 0) categories[cat].p1B++;
                 if (up1 > 0) categories[cat].up1B++;
                 if (up2 > 0) categories[cat].up2B++;
             });
@@ -204,16 +227,16 @@ function processSalesData(rows, startDate, endDate) {
 // ================================================================
 
 function renderFunnel(adsTotals) {
-    const s = latestSalesAnalysis.summary;
+    const s    = latestSalesAnalysis.summary;
     const spend = adsTotals.spend || 0;
-    const rev = s.totalRevenue || 0;
-    const totalBills = s.totalBills || 0;
+    const rev   = s.totalRevenue  || 0;
+    const totalBills     = s.totalBills     || 0;
     const totalCustomers = s.totalCustomers || 0;
 
-    const roas = spend > 0 ? rev / spend : 0;
-    const cpl = totalBills > 0 ? spend / totalBills : 0;
+    const roas        = spend > 0 ? rev / spend : 0;
+    const cpl         = totalBills > 0 ? spend / totalBills : 0;
     const costPerHead = totalCustomers > 0 ? spend / totalCustomers : 0;
-    const avgPerHead = totalCustomers > 0 ? rev / totalCustomers : 0;
+    const avgPerHead  = totalCustomers > 0 ? rev   / totalCustomers : 0;
     const bookingToClose = totalBills > 0 ? ((totalCustomers / totalBills) * 100).toFixed(2) : "0.00";
 
     document.getElementById('funnelStatsGrid').innerHTML = `
@@ -304,12 +327,12 @@ function updateCampaignsTable() {
 }
 
 function renderSalesStats(data) {
-    const s = data.summary;
+    const s   = data.summary;
     const ads = latestAdsTotals || {};
     const messaging = ads.messaging_conversations || 0;
 
-    const messagingToP1Rate = messaging > 0 ? ((s.p1Bills / messaging) * 100).toFixed(2) : "0.00";
-    const messagingToP2Rate = messaging > 0 ? ((s.p2Leads / messaging) * 100).toFixed(2) : "0.00";
+    const messagingToP1Rate = messaging > 0 ? ((s.p1Bills  / messaging) * 100).toFixed(2) : "0.00";
+    const messagingToP2Rate = messaging > 0 ? ((s.p2Leads  / messaging) * 100).toFixed(2) : "0.00";
 
     document.getElementById('salesOverviewStatsGrid').innerHTML = `
         <div class="stat-card"><div class="stat-number">${formatNumber(s.totalBills)}</div><div class="stat-label">Total Bills (P1+P2)</div></div>
@@ -325,8 +348,8 @@ function renderSalesStats(data) {
         </div>
     `;
 
-    const p1ToUpP1Rate = s.p1Bills > 0 ? ((s.upp1Bills / s.p1Bills) * 100).toFixed(2) : "0.00";
-    const p2ToUpP2Rate = s.p2Leads > 0 ? ((s.upp2Bills / s.p2Leads) * 100).toFixed(2) : "0.00";
+    const p1ToUpP1Rate = s.p1Bills  > 0 ? ((s.upp1Bills / s.p1Bills)  * 100).toFixed(2) : "0.00";
+    const p2ToUpP2Rate = s.p2Leads  > 0 ? ((s.upp2Bills / s.p2Leads)  * 100).toFixed(2) : "0.00";
 
     document.getElementById('revenueContainer').innerHTML = `
         <div style="margin-bottom: 10px; color: var(--neon-cyan); font-weight: 600;">ยอดขายแยกตามประเภท (THB)</div>
@@ -407,7 +430,6 @@ function renderDailySpendChart(dailyData) {
             cursor: 'pointer'
         }
     });
-    // ให้ cursor pointer บน canvas
     document.getElementById('dailySpendChart').style.cursor = 'pointer';
 }
 
@@ -415,20 +437,20 @@ function renderDailySpendChart(dailyData) {
 // 7. MODALS
 // ================================================================
 
+// ✅ แก้ไข: ตรวจสอบเฉพาะประวัติที่มียอดชำระจริงเท่านั้น
 function checkIsNewCustomer(row) {
-    const C = CONFIG.COLUMN_NAMES;
-    const custName = String(row[C.CUSTOMER] || '').trim();
-    const custPhone = String(row[C.PHONE] || '').trim();
-    const startD = new Date(ui.startDate.value + 'T00:00:00');
+    const C        = CONFIG.COLUMN_NAMES;
+    const custName  = String(row[C.CUSTOMER] || '').trim();
+    const custPhone = String(row[C.PHONE]    || '').trim();
+    const startD    = new Date(ui.startDate.value + 'T00:00:00');
+
     const historyData = allSalesDataCache.filter(r => {
         const d = parseGvizDate(r[C.DATE]);
         return d && d < startD;
     });
-    return !historyData.some(h => {
-        const hName = String(h[C.CUSTOMER] || '').trim();
-        const hPhone = String(h[C.PHONE] || '').trim();
-        return (custName !== '' && hName === custName) || (custPhone !== '' && hPhone === custPhone);
-    });
+
+    // ใช้ hasPaidHistory เพื่อให้สอดคล้องกับ processSalesData
+    return !hasPaidHistory(custName, custPhone, historyData);
 }
 
 function showCategoryDetails(categoryName) {
@@ -439,7 +461,7 @@ function showCategoryDetails(categoryName) {
     });
 
     const groups = {
-        p1: filtered.filter(r => toNumber(r[C.P1]) > 0 && toNumber(r[C.UP_P1]) === 0),
+        p1:  filtered.filter(r => toNumber(r[C.P1])    > 0 && toNumber(r[C.UP_P1]) === 0),
         up1: filtered.filter(r => toNumber(r[C.UP_P1]) > 0),
         up2: filtered.filter(r => toNumber(r[C.UP_P2]) > 0)
     };
@@ -464,7 +486,7 @@ function showCategoryDetails(categoryName) {
                             return `<tr>
                                 <td>${formatDate(parseGvizDate(r[C.DATE]))}</td>
                                 <td>${r[C.CUSTOMER] || '-'}</td>
-                                <td>${r[C.CHANNEL] || '-'}</td>
+                                <td>${r[C.CHANNEL]  || '-'}</td>
                                 <td><span style="color:${isNew ? '#34d399' : '#a855f7'}; font-weight:600;">${isNew ? '🟢 ใหม่' : '🟣 เก่า'}</span></td>
                                 <td><small>${r[C.INTEREST] || '-'}</small></td>
                                 <td class="revenue-cell">${formatCurrency(toNumber(r[C.P1]))}</td>
@@ -489,20 +511,20 @@ function showCategoryDetails(categoryName) {
                     </thead>
                     <tbody>
                         ${groups.up1.map(r => {
-                            const custName = String(r[C.CUSTOMER] || '').trim();
-                            const custPhone = String(r[C.PHONE] || '').trim();
-                            const history = allSalesDataCache.find(h => {
-                                const hName = String(h[C.CUSTOMER] || '').trim();
-                                const hPhone = String(h[C.PHONE] || '').trim();
+                            const custName  = String(r[C.CUSTOMER] || '').trim();
+                            const custPhone = String(r[C.PHONE]    || '').trim();
+                            const history   = allSalesDataCache.find(h => {
+                                const hName  = String(h[C.CUSTOMER] || '').trim();
+                                const hPhone = String(h[C.PHONE]    || '').trim();
                                 return ((custPhone && hPhone === custPhone) || (hName === custName)) && toNumber(h[C.P1]) > 0;
                             });
-                            const p1Val = history ? toNumber(history[C.P1]) : 0;
-                            const p1Interest = history ? history[C.INTEREST] : 'Not Found';
+                            const p1Val      = history ? toNumber(history[C.P1]) : 0;
+                            const p1Interest = history ? history[C.INTEREST]     : 'Not Found';
                             const isNew = checkIsNewCustomer(r);
                             return `<tr>
                                 <td>${formatDate(parseGvizDate(r[C.DATE]))}</td>
                                 <td>${r[C.CUSTOMER] || '-'}</td>
-                                <td>${r[C.CHANNEL] || '-'}</td>
+                                <td>${r[C.CHANNEL]  || '-'}</td>
                                 <td><span style="color:${isNew ? '#34d399' : '#a855f7'}; font-weight:600;">${isNew ? '🟢 ใหม่' : '🟣 เก่า'}</span></td>
                                 <td><small>${r[C.INTEREST] || '-'}</small></td>
                                 <td><span class="context-label">Old Interest</span>${p1Interest}</td>
@@ -529,20 +551,20 @@ function showCategoryDetails(categoryName) {
                     </thead>
                     <tbody>
                         ${groups.up2.map(r => {
-                            const custName = String(r[C.CUSTOMER] || '').trim();
-                            const custPhone = String(r[C.PHONE] || '').trim();
-                            const history = allSalesDataCache.find(h => {
-                                const hName = String(h[C.CUSTOMER] || '').trim();
-                                const hPhone = String(h[C.PHONE] || '').trim();
+                            const custName  = String(r[C.CUSTOMER] || '').trim();
+                            const custPhone = String(r[C.PHONE]    || '').trim();
+                            const history   = allSalesDataCache.find(h => {
+                                const hName  = String(h[C.CUSTOMER] || '').trim();
+                                const hPhone = String(h[C.PHONE]    || '').trim();
                                 return ((custPhone && hPhone === custPhone) || (hName === custName)) && h[C.P2] && String(h[C.P2]).trim() !== '';
                             });
-                            const p2Interest = history ? history[C.INTEREST] : 'Not Found';
-                            const p2Date = history ? formatDate(parseGvizDate(history[C.DATE])) : '';
+                            const p2Interest = history ? history[C.INTEREST]                         : 'Not Found';
+                            const p2Date     = history ? formatDate(parseGvizDate(history[C.DATE]))  : '';
                             const isNew = checkIsNewCustomer(r);
                             return `<tr>
                                 <td>${formatDate(parseGvizDate(r[C.DATE]))}</td>
                                 <td>${r[C.CUSTOMER] || '-'}</td>
-                                <td>${r[C.CHANNEL] || '-'}</td>
+                                <td>${r[C.CHANNEL]  || '-'}</td>
                                 <td><span style="color:${isNew ? '#34d399' : '#a855f7'}; font-weight:600;">${isNew ? '🟢 ใหม่' : '🟣 เก่า'}</span></td>
                                 <td><small>${r[C.INTEREST] || '-'}</small></td>
                                 <td><span class="context-label">Lead Date: ${p2Date}</span>${p2Interest}</td>
@@ -564,14 +586,14 @@ function showChannelDetails(channelName) {
     const C = CONFIG.COLUMN_NAMES;
     const filtered = latestSalesAnalysis.filteredRows.filter(r => (r[C.CHANNEL] || 'ไม่ระบุ') === channelName);
     const groups = {
-        p1: filtered.filter(r => toNumber(r[C.P1]) > 0 && toNumber(r[C.UP_P1]) === 0),
-        p2: filtered.filter(r => r[C.P2] && String(r[C.P2]).trim() !== ''),
+        p1:   filtered.filter(r => toNumber(r[C.P1])    > 0 && toNumber(r[C.UP_P1]) === 0),
+        p2:   filtered.filter(r => r[C.P2] && String(r[C.P2]).trim() !== ''),
         upP2: filtered.filter(r => toNumber(r[C.UP_P2]) > 0)
     };
     ui.modalTitle.textContent = `ช่องทาง: ${channelName}`;
     let html = '';
-    if (groups.p1.length > 0) html += `<div class="type-section"><div class="type-title">📦 P1 Bills <span class="type-badge">${groups.p1.length}</span></div><div class="scrollable-table"><table><thead><tr><th>Date</th><th>Customer</th><th>Tel</th><th>Interest</th><th>Revenue</th></tr></thead><tbody>${groups.p1.map(r => `<tr><td>${formatDate(parseGvizDate(r[C.DATE]))}</td><td>${r[C.CUSTOMER] || '-'}</td><td>${r[C.PHONE] || '-'}</td><td><small>${r[C.INTEREST] || '-'}</small></td><td class="revenue-cell">${formatCurrency(toNumber(r[C.P1]))}</td></tr>`).join('')}</tbody></table></div></div>`;
-    if (groups.p2.length > 0) html += `<div class="type-section"><div class="type-title">📋 P2 Leads <span class="type-badge">${groups.p2.length}</span></div><div class="scrollable-table"><table><thead><tr><th>Date</th><th>Customer</th><th>Tel</th><th>Interest</th></tr></thead><tbody>${groups.p2.map(r => `<tr><td>${formatDate(parseGvizDate(r[C.DATE]))}</td><td>${r[C.CUSTOMER] || '-'}</td><td>${r[C.PHONE] || '-'}</td><td><small>${r[C.P2] || '-'}</small></td></tr>`).join('')}</tbody></table></div></div>`;
+    if (groups.p1.length > 0)   html += `<div class="type-section"><div class="type-title">📦 P1 Bills <span class="type-badge">${groups.p1.length}</span></div><div class="scrollable-table"><table><thead><tr><th>Date</th><th>Customer</th><th>Tel</th><th>Interest</th><th>Revenue</th></tr></thead><tbody>${groups.p1.map(r => `<tr><td>${formatDate(parseGvizDate(r[C.DATE]))}</td><td>${r[C.CUSTOMER] || '-'}</td><td>${r[C.PHONE] || '-'}</td><td><small>${r[C.INTEREST] || '-'}</small></td><td class="revenue-cell">${formatCurrency(toNumber(r[C.P1]))}</td></tr>`).join('')}</tbody></table></div></div>`;
+    if (groups.p2.length > 0)   html += `<div class="type-section"><div class="type-title">📋 P2 Leads <span class="type-badge">${groups.p2.length}</span></div><div class="scrollable-table"><table><thead><tr><th>Date</th><th>Customer</th><th>Tel</th><th>Interest</th></tr></thead><tbody>${groups.p2.map(r => `<tr><td>${formatDate(parseGvizDate(r[C.DATE]))}</td><td>${r[C.CUSTOMER] || '-'}</td><td>${r[C.PHONE] || '-'}</td><td><small>${r[C.P2] || '-'}</small></td></tr>`).join('')}</tbody></table></div></div>`;
     if (groups.upP2.length > 0) html += `<div class="type-section"><div class="type-title">💎 UP P2 Bills <span class="type-badge">${groups.upP2.length}</span></div><div class="scrollable-table"><table><thead><tr><th>Date</th><th>Customer</th><th>Tel</th><th>Interest</th><th>Revenue</th></tr></thead><tbody>${groups.upP2.map(r => `<tr><td>${formatDate(parseGvizDate(r[C.DATE]))}</td><td>${r[C.CUSTOMER] || '-'}</td><td>${r[C.PHONE] || '-'}</td><td><small>${r[C.INTEREST] || '-'}</small></td><td class="revenue-cell">${formatCurrency(toNumber(r[C.UP_P2]))}</td></tr>`).join('')}</tbody></table></div></div>`;
     if (html === '') html = '<p style="text-align:center; padding: 20px;">No transaction details found.</p>';
     ui.modalBody.innerHTML = html;
@@ -608,27 +630,21 @@ function showAdDetails(campaignId) {
 // 7b. DAILY ADS MODAL
 // ================================================================
 
-// ── Normalize date → "YYYY-MM-DD" ────────────────────────────────
 function normalizeDateStr(raw) {
     if (!raw) return '';
     const s = String(raw).trim();
-    // Already YYYY-MM-DD
     if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
-    // DD-MM-YYYY
     const m = s.match(/^(\d{2})-(\d{2})-(\d{4})/);
     if (m) return `${m[3]}-${m[2]}-${m[1]}`;
-    // Try Date parse
     const d = new Date(s);
     if (!isNaN(d)) return d.toISOString().slice(0, 10);
     return s.slice(0, 10);
 }
 
-// ── คำนวณ Messaging รายวัน ────────────────────────────────────────
 function getDailyMessaging(dateStr) {
-    const targetDate = normalizeDateStr(dateStr); // "YYYY-MM-DD"
+    const targetDate = normalizeDateStr(dateStr);
     let total = 0;
 
-    // 1) ลองหาจาก daily_breakdown ของแต่ละ ad
     (latestCampaignData || []).forEach(campaign => {
         (campaign.ads || []).forEach(ad => {
             const breakdown = ad.daily_breakdown || ad.insights_daily || [];
@@ -640,15 +656,11 @@ function getDailyMessaging(dateStr) {
         });
     });
 
-    // 2) Proportional fallback จาก spend รายวัน
     if (total === 0) {
         const totalSpend = toNumber(latestAdsTotals.spend || 0);
         const totalMsg   = toNumber(latestAdsTotals.messaging_conversations || 0);
-
-        // หา daySpend โดย normalize date ทั้งสองฝั่ง
-        const dayEntry = latestDailySpendData.find(d => normalizeDateStr(d.date) === targetDate);
-        const daySpend = toNumber((dayEntry || {}).spend || 0);
-
+        const dayEntry   = latestDailySpendData.find(d => normalizeDateStr(d.date) === targetDate);
+        const daySpend   = toNumber((dayEntry || {}).spend || 0);
         if (totalSpend > 0 && totalMsg > 0 && daySpend > 0) {
             total = Math.round((daySpend / totalSpend) * totalMsg);
         }
@@ -657,12 +669,12 @@ function getDailyMessaging(dateStr) {
 }
 
 function processDailyAdsSales(dateStr) {
-    const C = CONFIG.COLUMN_NAMES;
+    const C          = CONFIG.COLUMN_NAMES;
     const normalized = normalizeDateStr(dateStr);
     const targetDate = new Date(normalized + 'T00:00:00');
-    const targetY = targetDate.getFullYear();
-    const targetM = targetDate.getMonth();
-    const targetD = targetDate.getDate();
+    const targetY    = targetDate.getFullYear();
+    const targetM    = targetDate.getMonth();
+    const targetD    = targetDate.getDate();
 
     const dayRows = latestSalesAnalysis.filteredRows.filter(r => {
         const d = parseGvizDate(r[C.DATE]);
@@ -695,9 +707,9 @@ function processDailyAdsSales(dateStr) {
 }
 
 function showDailyAdsModal(dayData) {
-    const C = CONFIG.COLUMN_NAMES;
-    const dateStr   = normalizeDateStr(dayData.date);   // ← normalize ก่อนใช้ทุกที่
-    const spend     = dayData.spend || 0;
+    const C       = CONFIG.COLUMN_NAMES;
+    const dateStr = normalizeDateStr(dayData.date);
+    const spend   = dayData.spend || 0;
     const messaging = getDailyMessaging(dateStr);
 
     const sales = processDailyAdsSales(dateStr);
@@ -705,8 +717,8 @@ function showDailyAdsModal(dayData) {
             up2Bills, up2Revenue, totalRevenue, totalCustomers, dayRows } = sales;
 
     const avgPerHead  = totalCustomers > 0 ? totalRevenue / totalCustomers : 0;
-    const closingP1   = messaging > 0 ? ((p1Bills  / messaging) * 100).toFixed(2) : '0.00';
-    const closingP2   = messaging > 0 ? ((p2Leads  / messaging) * 100).toFixed(2) : '0.00';
+    const closingP1   = messaging > 0 ? ((p1Bills / messaging) * 100).toFixed(2) : '0.00';
+    const closingP2   = messaging > 0 ? ((p2Leads / messaging) * 100).toFixed(2) : '0.00';
     const roas        = spend > 0 ? (totalRevenue / spend).toFixed(2) : '0.00';
     const costPerHead = totalCustomers > 0 ? spend / totalCustomers : 0;
 
@@ -722,7 +734,6 @@ function showDailyAdsModal(dayData) {
     const p2Rows  = dayRows.filter(r => String(r[C.P2] || '').trim() !== '');
     const up2Rows = dayRows.filter(r => toNumber(r[C.UP_P2]) > 0);
 
-    // ── KPI card helpers ─────────────────────────────────────────
     const kpiCard = (color, value, label) => `
         <div style="border:1px solid ${color};background:${color}12;border-radius:10px;
                     padding:12px 8px;text-align:center;min-width:0;">
@@ -731,7 +742,6 @@ function showDailyAdsModal(dayData) {
             <div style="font-size:0.68em;color:#a0a0b0;margin-top:4px;line-height:1.3;">${label}</div>
         </div>`;
 
-    // section header
     const sectionLabel = (text) => `
         <div style="font-size:0.7em;font-weight:700;color:#555;letter-spacing:1.5px;
                     text-transform:uppercase;margin:14px 0 6px 2px;">${text}</div>`;
@@ -812,7 +822,7 @@ function showDailyAdsModal(dayData) {
     ui.modal.classList.add('show');
 }
 
-// ── ตารางบิลทุกประเภท (style เหมือน showCategoryDetails) ──────────
+// ── ตารางบิลทุกประเภท ────────────────────────────────────────────
 function buildDailyBillTables(p1Rows, up1Rows, p2Rows, up2Rows) {
     const C = CONFIG.COLUMN_NAMES;
     let html = '';
@@ -832,10 +842,10 @@ function buildDailyBillTables(p1Rows, up1Rows, p2Rows, up2Rows) {
                     const isNew = checkIsNewCustomer(r);
                     return `<tr>
                         <td>${formatDate(parseGvizDate(r[C.DATE]))}</td>
-                        <td>${r[C.CUSTOMER]||'-'}</td>
-                        <td>${r[C.CHANNEL]||'-'}</td>
-                        <td><span style="color:${isNew?'#34d399':'#a855f7'};font-weight:600;">${isNew?'🟢 ใหม่':'🟣 เก่า'}</span></td>
-                        <td><small>${r[C.INTEREST]||'-'}</small></td>
+                        <td>${r[C.CUSTOMER] || '-'}</td>
+                        <td>${r[C.CHANNEL]  || '-'}</td>
+                        <td><span style="color:${isNew ? '#34d399' : '#a855f7'};font-weight:600;">${isNew ? '🟢 ใหม่' : '🟣 เก่า'}</span></td>
+                        <td><small>${r[C.INTEREST] || '-'}</small></td>
                         <td class="revenue-cell">${formatCurrency(toNumber(r[C.P1]))}</td>
                     </tr>`;
                 }).join('')}
@@ -857,22 +867,22 @@ function buildDailyBillTables(p1Rows, up1Rows, p2Rows, up2Rows) {
                 </tr></thead>
                 <tbody>
                 ${up1Rows.map(r => {
-                    const custName  = String(r[C.CUSTOMER]||'').trim();
-                    const custPhone = String(r[C.PHONE]||'').trim();
+                    const custName  = String(r[C.CUSTOMER] || '').trim();
+                    const custPhone = String(r[C.PHONE]    || '').trim();
                     const history   = allSalesDataCache.find(h => {
-                        const hName  = String(h[C.CUSTOMER]||'').trim();
-                        const hPhone = String(h[C.PHONE]||'').trim();
-                        return ((custPhone && hPhone === custPhone)||(hName === custName)) && toNumber(h[C.P1]) > 0;
+                        const hName  = String(h[C.CUSTOMER] || '').trim();
+                        const hPhone = String(h[C.PHONE]    || '').trim();
+                        return ((custPhone && hPhone === custPhone) || (hName === custName)) && toNumber(h[C.P1]) > 0;
                     });
                     const p1Val      = history ? toNumber(history[C.P1]) : 0;
                     const p1Interest = history ? history[C.INTEREST]     : 'Not Found';
                     const isNew = checkIsNewCustomer(r);
                     return `<tr>
                         <td>${formatDate(parseGvizDate(r[C.DATE]))}</td>
-                        <td>${r[C.CUSTOMER]||'-'}</td>
-                        <td>${r[C.CHANNEL]||'-'}</td>
-                        <td><span style="color:${isNew?'#34d399':'#a855f7'};font-weight:600;">${isNew?'🟢 ใหม่':'🟣 เก่า'}</span></td>
-                        <td><small>${r[C.INTEREST]||'-'}</small></td>
+                        <td>${r[C.CUSTOMER] || '-'}</td>
+                        <td>${r[C.CHANNEL]  || '-'}</td>
+                        <td><span style="color:${isNew ? '#34d399' : '#a855f7'};font-weight:600;">${isNew ? '🟢 ใหม่' : '🟣 เก่า'}</span></td>
+                        <td><small>${r[C.INTEREST] || '-'}</small></td>
                         <td><span class="context-label">Old Interest</span>${p1Interest}</td>
                         <td class="context-cell">${formatCurrency(p1Val)}</td>
                         <td class="revenue-cell">${formatCurrency(toNumber(r[C.UP_P1]))}</td>
@@ -895,10 +905,10 @@ function buildDailyBillTables(p1Rows, up1Rows, p2Rows, up2Rows) {
                 <tbody>
                 ${p2Rows.map(r => `<tr>
                     <td>${formatDate(parseGvizDate(r[C.DATE]))}</td>
-                    <td>${r[C.CUSTOMER]||'-'}</td>
-                    <td>${r[C.CHANNEL]||'-'}</td>
-                    <td style="color:#a0a0b0;font-size:0.85em;">${r[C.PHONE]||'-'}</td>
-                    <td><small>${r[C.P2]||'-'}</small></td>
+                    <td>${r[C.CUSTOMER] || '-'}</td>
+                    <td>${r[C.CHANNEL]  || '-'}</td>
+                    <td style="color:#a0a0b0;font-size:0.85em;">${r[C.PHONE] || '-'}</td>
+                    <td><small>${r[C.P2] || '-'}</small></td>
                 </tr>`).join('')}
                 </tbody>
             </table></div>
@@ -917,23 +927,23 @@ function buildDailyBillTables(p1Rows, up1Rows, p2Rows, up2Rows) {
                 </tr></thead>
                 <tbody>
                 ${up2Rows.map(r => {
-                    const custName  = String(r[C.CUSTOMER]||'').trim();
-                    const custPhone = String(r[C.PHONE]||'').trim();
+                    const custName  = String(r[C.CUSTOMER] || '').trim();
+                    const custPhone = String(r[C.PHONE]    || '').trim();
                     const history   = allSalesDataCache.find(h => {
-                        const hName  = String(h[C.CUSTOMER]||'').trim();
-                        const hPhone = String(h[C.PHONE]||'').trim();
-                        return ((custPhone && hPhone === custPhone)||(hName === custName))
+                        const hName  = String(h[C.CUSTOMER] || '').trim();
+                        const hPhone = String(h[C.PHONE]    || '').trim();
+                        return ((custPhone && hPhone === custPhone) || (hName === custName))
                             && h[C.P2] && String(h[C.P2]).trim() !== '';
                     });
-                    const p2Interest = history ? history[C.INTEREST]                        : 'Not Found';
-                    const p2Date     = history ? formatDate(parseGvizDate(history[C.DATE])) : '';
+                    const p2Interest = history ? history[C.INTEREST]                         : 'Not Found';
+                    const p2Date     = history ? formatDate(parseGvizDate(history[C.DATE]))  : '';
                     const isNew = checkIsNewCustomer(r);
                     return `<tr>
                         <td>${formatDate(parseGvizDate(r[C.DATE]))}</td>
-                        <td>${r[C.CUSTOMER]||'-'}</td>
-                        <td>${r[C.CHANNEL]||'-'}</td>
-                        <td><span style="color:${isNew?'#34d399':'#a855f7'};font-weight:600;">${isNew?'🟢 ใหม่':'🟣 เก่า'}</span></td>
-                        <td><small>${r[C.INTEREST]||'-'}</small></td>
+                        <td>${r[C.CUSTOMER] || '-'}</td>
+                        <td>${r[C.CHANNEL]  || '-'}</td>
+                        <td><span style="color:${isNew ? '#34d399' : '#a855f7'};font-weight:600;">${isNew ? '🟢 ใหม่' : '🟣 เก่า'}</span></td>
+                        <td><small>${r[C.INTEREST] || '-'}</small></td>
                         <td><span class="context-label">Lead Date: ${p2Date}</span>${p2Interest}</td>
                         <td class="revenue-cell">${formatCurrency(toNumber(r[C.UP_P2]))}</td>
                     </tr>`;
@@ -947,13 +957,12 @@ function buildDailyBillTables(p1Rows, up1Rows, p2Rows, up2Rows) {
     return html;
 }
 
-// ── Export modal เป็นรูป พร้อมสาขา + วันที่ ──────────────────────
+// ── Export modal เป็นรูป ──────────────────────────────────────────
 async function exportDailyModalAsImage(branchName, displayDate) {
     const btn = document.getElementById('exportDailyBtn');
     if (btn) { btn.textContent = '⏳ กำลังสร้างรูป...'; btn.disabled = true; }
 
     try {
-        // lazy-load html2canvas จาก CDN
         if (typeof html2canvas === 'undefined') {
             await new Promise((resolve, reject) => {
                 const s = document.createElement('script');
@@ -965,7 +974,6 @@ async function exportDailyModalAsImage(branchName, displayDate) {
 
         const target = document.getElementById('dailyModalExportArea');
 
-        // ขยาย scrollable-table ให้แสดงครบก่อน capture
         const scrollDivs = target.querySelectorAll('.scrollable-table');
         const origMax = [], origOvf = [];
         scrollDivs.forEach(d => {
@@ -975,7 +983,6 @@ async function exportDailyModalAsImage(branchName, displayDate) {
             d.style.overflow  = 'visible';
         });
 
-        // capture @ scale 3 เพื่อความคมชัด
         const canvas = await html2canvas(target, {
             backgroundColor: '#0f0f1a',
             scale: 3,
@@ -986,15 +993,13 @@ async function exportDailyModalAsImage(branchName, displayDate) {
             windowHeight: target.scrollHeight
         });
 
-        // คืนค่าเดิม
         scrollDivs.forEach((d, i) => {
             d.style.maxHeight = origMax[i];
             d.style.overflow  = origOvf[i];
         });
 
-        // filename: branchName_DD-MM-YY.png
-        const safeDate   = displayDate.replace(/\s/g,'').replace(/\//g,'-');
-        const safeBranch = branchName.replace(/[^a-zA-Zก-๙0-9]/g,'_');
+        const safeDate   = displayDate.replace(/\s/g, '').replace(/\//g, '-');
+        const safeBranch = branchName.replace(/[^a-zA-Zก-๙0-9]/g, '_');
         const link = document.createElement('a');
         link.download = `${safeBranch}_${safeDate}.png`;
         link.href = canvas.toDataURL('image/png', 1.0);
@@ -1014,30 +1019,24 @@ async function exportDailyModalAsImage(branchName, displayDate) {
     }
 }
 
+// ================================================================
+// 8. PROMPT GENERATORS
+// ================================================================
 
-
-
-
-// ── ปุ่มที่ 1: สรุป Ads Analyst ──────────────────────────────────
 function generateAdsAnalystPrompt() {
-    const s = latestSalesAnalysis.summary;
-    const ads = latestAdsTotals || {};
-    const f = (n) => formatCurrency(n);
-    const num = (n) => formatNumber(n);
-
-    const spend = ads.spend || 0;
-    const rev = s.totalRevenue || 0;
+    const s         = latestSalesAnalysis.summary;
+    const ads       = latestAdsTotals || {};
+    const f         = (n) => formatCurrency(n);
+    const num       = (n) => formatNumber(n);
+    const spend     = ads.spend || 0;
+    const rev       = s.totalRevenue || 0;
     const messaging = ads.messaging_conversations || 0;
-    const aph = s.totalCustomers > 0 ? (rev / s.totalCustomers) : 0;
+    const aph       = s.totalCustomers > 0 ? (rev / s.totalCustomers) : 0;
     const msgingToP1 = messaging > 0 ? ((s.p1Bills / messaging) * 100).toFixed(2) : "0.00";
     const msgingToP2 = messaging > 0 ? ((s.p2Leads / messaging) * 100).toFixed(2) : "0.00";
 
-    const cats = latestSalesAnalysis.categories || [];
-
-    // ── getTop5 แยกตาม sortKey ────────────────────────────────────
-    const getTop5 = (sortKey) => [...cats].sort((a, b) => b[sortKey] - a[sortKey]).slice(0, 5);
-
-    // ── channel data ──────────────────────────────────────────────
+    const cats     = latestSalesAnalysis.categories || [];
+    const getTop5  = (sortKey) => [...cats].sort((a, b) => b[sortKey] - a[sortKey]).slice(0, 5);
     const channels = latestSalesAnalysis.channels || {};
     const sortedChannels = Object.entries(channels).sort((a, b) => b[1].revenue - a[1].revenue);
 
@@ -1051,7 +1050,6 @@ function generateAdsAnalystPrompt() {
     p += `การปิด P2% = ${msgingToP2}%\n`;
     p += `Avg Per Head = ${f(aph)}\n\n`;
 
-    // ── P1 (ใช้ p1Val และ p1B เท่านั้น) ──────────────────────────
     p += `หมวดหมู่ P1 (บิลพร้อมยอดชำระ):\n`;
     const p1cats = getTop5('p1B').filter(c => c.p1B > 0);
     p += (p1cats.length > 0
@@ -1062,16 +1060,13 @@ function generateAdsAnalystPrompt() {
     p += `ช่องทางการติดต่อ P1 (บิล P1 แยกตามช่องทาง):\n`;
     if (sortedChannels.length > 0) {
         sortedChannels.forEach(([chName, chVal]) => {
-            if (chVal.p1 > 0) {
-                p += `- ${chName}: ${num(chVal.p1)} บิล\n`;
-            }
+            if (chVal.p1 > 0) p += `- ${chName}: ${num(chVal.p1)} บิล\n`;
         });
     } else {
         p += `- ไม่มีข้อมูล\n`;
     }
     p += `\n____________________\n\n`;
 
-    // ── UP P1 (ใช้ up1Val และ up1B เท่านั้น) ─────────────────────
     p += `UP P1 บิล = ${num(s.upp1Bills)}\n`;
     p += `UP P1 ยอดชำระ = ${f(s.upp1Revenue)}\n`;
     p += `หมวดหมู่ UP P1 (บิลพร้อมยอดชำระ):\n`;
@@ -1081,7 +1076,6 @@ function generateAdsAnalystPrompt() {
         : '- ไม่มีข้อมูล');
     p += `\n\n`;
 
-    // ── UP P2 (ใช้ up2Val และ up2B เท่านั้น) ─────────────────────
     p += `UP P2 บิล = ${num(s.upp2Bills)}\n`;
     p += `UP P2 ยอดชำระ = ${f(s.upp2Revenue)}\n`;
     p += `หมวดหมู่ UP P2 (บิลพร้อมยอดชำระ):\n`;
@@ -1094,16 +1088,13 @@ function generateAdsAnalystPrompt() {
     p += `ช่องทางการติดต่อ UP P2 (แยกตามช่องทาง):\n`;
     if (sortedChannels.length > 0) {
         sortedChannels.forEach(([chName, chVal]) => {
-            if (chVal.upP2 > 0) {
-                p += `- ${chName}: ${num(chVal.upP2)} บิล | ยอดสะสม: ${f(chVal.up2Revenue)}\n`;
-            }
+            if (chVal.upP2 > 0) p += `- ${chName}: ${num(chVal.upP2)} บิล | ยอดสะสม: ${f(chVal.up2Revenue)}\n`;
         });
     } else {
         p += `- ไม่มีข้อมูล\n`;
     }
     p += `\n____________________\n\n`;
 
-    // ── สรุปช่องทางรวมทุกประเภท ──────────────────────────────────
     p += `สรุปช่องทางการติดต่อรวมทุกประเภท (เรียงตามยอดขาย):\n`;
     if (sortedChannels.length > 0) {
         sortedChannels.forEach(([chName, chVal]) => {
@@ -1118,29 +1109,28 @@ function generateAdsAnalystPrompt() {
     return p;
 }
 
-// ── ปุ่มที่ 2: สรุปผลรวมสาขา ─────────────────────────────────────
 function generateBranchSummaryPrompt() {
-    const s = latestSalesAnalysis.summary;
-    const ads = latestAdsTotals || {};
-    const f = (n) => formatCurrency(n);
-    const num = (n) => formatNumber(n);
+    const s          = latestSalesAnalysis.summary;
+    const ads        = latestAdsTotals || {};
+    const f          = (n) => formatCurrency(n);
+    const num        = (n) => formatNumber(n);
     const branchName = document.querySelector('h1').innerText.split(':')[0].trim();
 
-    const spend = ads.spend || 0;
-    const rev = s.totalRevenue || 0;
-    const messaging = ads.messaging_conversations || 0;
-    const roas = spend > 0 ? (rev / spend).toFixed(2) + 'x' : '0x';
-    const cpb = s.totalBills > 0 ? (spend / s.totalBills) : 0;
-    const cph = s.totalCustomers > 0 ? (spend / s.totalCustomers) : 0;
-    const aph = s.totalCustomers > 0 ? (rev / s.totalCustomers) : 0;
-    const bookingClose = s.totalBills > 0 ? ((s.totalCustomers / s.totalBills) * 100).toFixed(2) : 0;
-    const msgingToP1 = messaging > 0 ? ((s.p1Bills / messaging) * 100).toFixed(2) : "0.00";
-    const msgingToP2 = messaging > 0 ? ((s.p2Leads / messaging) * 100).toFixed(2) : "0.00";
-    const p1ToUpP1Rate = s.p1Bills > 0 ? ((s.upp1Bills / s.p1Bills) * 100).toFixed(2) : "0.00";
-    const p2ToUpP2Rate = s.p2Leads > 0 ? ((s.upp2Bills / s.p2Leads) * 100).toFixed(2) : "0.00";
+    const spend      = ads.spend || 0;
+    const rev        = s.totalRevenue || 0;
+    const messaging  = ads.messaging_conversations || 0;
+    const roas       = spend > 0 ? (rev / spend).toFixed(2) + 'x' : '0x';
+    const cpb        = s.totalBills     > 0 ? (spend / s.totalBills)     : 0;
+    const cph        = s.totalCustomers > 0 ? (spend / s.totalCustomers) : 0;
+    const aph        = s.totalCustomers > 0 ? (rev   / s.totalCustomers) : 0;
+    const bookingClose  = s.totalBills  > 0 ? ((s.totalCustomers / s.totalBills) * 100).toFixed(2) : 0;
+    const msgingToP1    = messaging > 0 ? ((s.p1Bills  / messaging) * 100).toFixed(2) : "0.00";
+    const msgingToP2    = messaging > 0 ? ((s.p2Leads  / messaging) * 100).toFixed(2) : "0.00";
+    const p1ToUpP1Rate  = s.p1Bills > 0 ? ((s.upp1Bills / s.p1Bills) * 100).toFixed(2) : "0.00";
+    const p2ToUpP2Rate  = s.p2Leads > 0 ? ((s.upp2Bills / s.p2Leads) * 100).toFixed(2) : "0.00";
 
-    const cats = latestSalesAnalysis.categories || [];
-    const getTop5 = (sortKey) => [...cats].sort((a, b) => b[sortKey] - a[sortKey]).slice(0, 5);
+    const cats     = latestSalesAnalysis.categories || [];
+    const getTop5  = (sortKey) => [...cats].sort((a, b) => b[sortKey] - a[sortKey]).slice(0, 5);
 
     let p = `### [สรุปผลรวมสาขา]\n`;
     p += `สาขา: ${branchName}\n`;
@@ -1186,8 +1176,7 @@ function generateBranchSummaryPrompt() {
     p += `5 อันดับหมวดหมู่ UP P2 ขายดี (ปิดการขายจาก Lead):\n`;
     p += getTop5('up2B').map(c => `- ${c.name}: ${num(c.up2B)} บิล | ยอดชำระ: ${f(c.up2Val)}`).join('\n') + `\n\n`;
 
-    // ── สรุปช่องทางการติดต่อรวม ───────────────────────────────────
-    const channels = latestSalesAnalysis.channels || {};
+    const channels       = latestSalesAnalysis.channels || {};
     const sortedChannels = Object.entries(channels).sort((a, b) => b[1].revenue - a[1].revenue);
     p += `--- [ช่องทางการติดต่อรวมทุกประเภท] ---\n`;
     if (sortedChannels.length > 0) {
@@ -1204,7 +1193,6 @@ function generateBranchSummaryPrompt() {
     return p;
 }
 
-// ── helper: แสดง prompt ใน modal ─────────────────────────────────
 function openPromptModal(title, prompt, textColor, btnColor) {
     const _btnColor = btnColor || textColor;
     ui.modalTitle.textContent = title;
@@ -1259,8 +1247,8 @@ async function main() {
 
         const adsRes = await fetchAdsData(ui.startDate.value, ui.endDate.value);
         if (adsRes.success) {
-            latestCampaignData = adsRes.data.campaigns;
-            latestAdsTotals = adsRes.totals;
+            latestCampaignData   = adsRes.data.campaigns;
+            latestAdsTotals      = adsRes.totals;
             latestDailySpendData = adsRes.data.dailySpend || [];
             renderFunnel(adsRes.totals);
             renderAdsStats(adsRes.totals);
@@ -1286,32 +1274,31 @@ async function main() {
 // 10. EVENTS
 // ================================================================
 document.addEventListener('DOMContentLoaded', () => {
-    const today = new Date();
+    const today      = new Date();
     const startMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-    ui.endDate.value = today.toISOString().split('T')[0];
+    ui.endDate.value   = today.toISOString().split('T')[0];
     ui.startDate.value = startMonth.toISOString().split('T')[0];
 
     main();
 
-    // ── Refresh ──────────────────────────────────────────────────
-    ui.refreshBtn.addEventListener('click', main);
+    ui.refreshBtn.addEventListener('click', () => {
+        // ล้าง cache เพื่อโหลดข้อมูลใหม่
+        allSalesDataCache = [];
+        main();
+    });
 
-    // ── Modal Close ───────────────────────────────────────────────
     ui.modalCloseBtn.addEventListener('click', () => ui.modal.classList.remove('show'));
 
-    // ── ปุ่มที่ 1: สรุป Ads Analyst ──────────────────────────────
     ui.adsAnalystBtn.addEventListener('click', () => {
         const prompt = generateAdsAnalystPrompt();
         openPromptModal('🤖 Prompt สรุป Ads Analyst', prompt, '#00f2fe');
     });
 
-    // ── ปุ่มที่ 2: สรุปผลรวมสาขา ─────────────────────────────────
     ui.branchSummaryBtn.addEventListener('click', () => {
         const prompt = generateBranchSummaryPrompt();
         openPromptModal('📊 Prompt สรุปผลรวมสาขา', prompt, '#ffffff', '#f472b6');
     });
 
-    // ── Campaign Table Sort ───────────────────────────────────────
     if (ui.campaignsTableHeader) {
         ui.campaignsTableHeader.addEventListener('click', (e) => {
             const th = e.target.closest('th');
@@ -1320,14 +1307,13 @@ document.addEventListener('DOMContentLoaded', () => {
             if (currentSort.key === key) {
                 currentSort.direction = currentSort.direction === 'desc' ? 'asc' : 'desc';
             } else {
-                currentSort.key = key;
+                currentSort.key       = key;
                 currentSort.direction = 'desc';
             }
             updateCampaignsTable();
         });
     }
 
-    // ── Campaign Search ───────────────────────────────────────────
     document.getElementById('campaignSearchInput').addEventListener('input', () => {
         updateCampaignsTable();
     });
