@@ -64,24 +64,17 @@ const getNestedValue = (obj, path) => {
 
 // ================================================================
 // 3b. CUSTOMER HISTORY HELPER
-// ── ตรวจสอบว่าลูกค้ามีประวัติการซื้อที่มียอดชำระจริง
-//    (P1 > 0 หรือ UP_P1 > 0 หรือ UP_P2 > 0) ก่อน startDate หรือไม่
-//    ถ้ามีเฉพาะ P2 lead (ไม่มียอดชำระ) → ถือเป็นลูกค้าใหม่
 // ================================================================
 function hasPaidHistory(custName, custPhone, historyRows) {
     const C = CONFIG.COLUMN_NAMES;
     return historyRows.some(h => {
         const hName  = String(h[C.CUSTOMER] || '').trim();
         const hPhone = String(h[C.PHONE]    || '').trim();
-
-        // ต้องมียอดชำระจริง — P2 lead อย่างเดียวไม่นับ
         const hasPaidRevenue =
             toNumber(h[C.P1])    > 0 ||
             toNumber(h[C.UP_P1]) > 0 ||
             toNumber(h[C.UP_P2]) > 0;
-
         if (!hasPaidRevenue) return false;
-
         return (custName  !== '' && hName  === custName)  ||
                (custPhone !== '' && hPhone === custPhone);
     });
@@ -111,7 +104,6 @@ async function fetchSalesData() {
     const jsonStr = text.substring(text.indexOf('{'), text.lastIndexOf('}') + 1);
     const gvizData = JSON.parse(jsonStr);
     const cols = gvizData.table.cols.map(c => (c.label || c.id || '').trim());
-
     allSalesDataCache = gvizData.table.rows.map(r => {
         const obj = {};
         cols.forEach((col, i) => obj[col] = r.c && r.c[i] ? r.c[i].v : null);
@@ -128,13 +120,11 @@ function processSalesData(rows, startDate, endDate) {
     const startD = new Date(startDate + 'T00:00:00');
     const endD   = new Date(endDate   + 'T23:59:59');
 
-    // ── ประวัติก่อนช่วงที่เลือก ──────────────────────────────────
     const historyData = rows.filter(r => {
         const d = parseGvizDate(r[C.DATE]);
         return d && d < startD;
     });
 
-    // ── ข้อมูลในช่วงที่เลือก ─────────────────────────────────────
     const filteredRows = rows.filter(r => {
         const d = parseGvizDate(r[C.DATE]);
         return d && d >= startD && d <= endD;
@@ -178,9 +168,7 @@ function processSalesData(rows, startDate, endDate) {
             if (p1 > 0 || up2 > 0) summary.totalCustomers++;
 
             if (p1 > 0 || up2 > 0) {
-                // ✅ ตรวจสอบประวัติที่มียอดชำระจริงเท่านั้น
                 const isOldCustomer = hasPaidHistory(custName, custPhone, historyData);
-
                 if (!isOldCustomer) {
                     if (!processedNewCust.has(custKey)) {
                         summary.newCustomersCount++;
@@ -437,7 +425,6 @@ function renderDailySpendChart(dailyData) {
 // 7. MODALS
 // ================================================================
 
-// ✅ แก้ไข: ตรวจสอบเฉพาะประวัติที่มียอดชำระจริงเท่านั้น
 function checkIsNewCustomer(row) {
     const C        = CONFIG.COLUMN_NAMES;
     const custName  = String(row[C.CUSTOMER] || '').trim();
@@ -449,7 +436,6 @@ function checkIsNewCustomer(row) {
         return d && d < startD;
     });
 
-    // ใช้ hasPaidHistory เพื่อให้สอดคล้องกับ processSalesData
     return !hasPaidHistory(custName, custPhone, historyData);
 }
 
@@ -475,11 +461,7 @@ function showCategoryDetails(categoryName) {
             <div class="type-title">📦 P1 Bills <span class="type-badge">${groups.p1.length} items</span></div>
             <div class="scrollable-table">
                 <table>
-                    <thead>
-                        <tr>
-                            <th>Date</th><th>Customer</th><th>Channel</th><th>ลูกค้าใหม่</th><th>Interest</th><th>Revenue</th>
-                        </tr>
-                    </thead>
+                    <thead><tr><th>Date</th><th>Customer</th><th>Channel</th><th>ลูกค้าใหม่</th><th>Interest</th><th>Revenue</th></tr></thead>
                     <tbody>
                         ${groups.p1.map(r => {
                             const isNew = checkIsNewCustomer(r);
@@ -504,11 +486,7 @@ function showCategoryDetails(categoryName) {
             <div class="type-title">🚀 UP P1 Bills <span class="type-badge">${groups.up1.length} items</span></div>
             <div class="scrollable-table">
                 <table>
-                    <thead>
-                        <tr>
-                            <th>Date</th><th>Customer</th><th>Channel</th><th>ลูกค้าใหม่</th><th>Upgrade Item</th><th>Original P1</th><th>Original P1 Amt</th><th>Upgrade Amt</th>
-                        </tr>
-                    </thead>
+                    <thead><tr><th>Date</th><th>Customer</th><th>Channel</th><th>ลูกค้าใหม่</th><th>Upgrade Item</th><th>Original P1</th><th>Original P1 Amt</th><th>Upgrade Amt</th></tr></thead>
                     <tbody>
                         ${groups.up1.map(r => {
                             const custName  = String(r[C.CUSTOMER] || '').trim();
@@ -544,11 +522,7 @@ function showCategoryDetails(categoryName) {
             <div class="type-title">💎 UP P2 Bills <span class="type-badge">${groups.up2.length} items</span></div>
             <div class="scrollable-table">
                 <table>
-                    <thead>
-                        <tr>
-                            <th>Date</th><th>Customer</th><th>Channel</th><th>ลูกค้าใหม่</th><th>Upgrade Interest</th><th>Original P2</th><th>Revenue</th>
-                        </tr>
-                    </thead>
+                    <thead><tr><th>Date</th><th>Customer</th><th>Channel</th><th>ลูกค้าใหม่</th><th>Upgrade Interest</th><th>Original P2</th><th>Revenue</th></tr></thead>
                     <tbody>
                         ${groups.up2.map(r => {
                             const custName  = String(r[C.CUSTOMER] || '').trim();
@@ -706,6 +680,59 @@ function processDailyAdsSales(dateStr) {
     return { dayRows, p1Bills, p1Revenue, p2Leads, up1Bills, up1Revenue, up2Bills, up2Revenue, totalRevenue, totalCustomers };
 }
 
+// ================================================================
+// 7c. NEW: P2 Interest Summary Builder
+// ── นับความถี่ของแต่ละ interest จาก P2 Rows แล้วสร้าง HTML summary
+// ================================================================
+function buildP2InterestSummary(p2Rows) {
+    const C = CONFIG.COLUMN_NAMES;
+    if (!p2Rows || p2Rows.length === 0) return '';
+
+    // นับความถี่ interest จาก column P2
+    const interestCount = {};
+    p2Rows.forEach(r => {
+        const interest = String(r[C.P2] || '').trim();
+        if (interest === '') return;
+        // บาง interest อาจมีหลายรายการคั่นด้วย comma
+        const items = interest.split(',').map(s => s.trim()).filter(s => s !== '');
+        items.forEach(item => {
+            interestCount[item] = (interestCount[item] || 0) + 1;
+        });
+    });
+
+    const sorted = Object.entries(interestCount).sort((a, b) => b[1] - a[1]);
+    if (sorted.length === 0) return '';
+
+    const bars = sorted.map(([name, count]) => {
+        const maxCount = sorted[0][1];
+        const pct = Math.round((count / maxCount) * 100);
+        return `
+            <div style="margin-bottom:6px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
+                    <span style="font-size:0.78em;color:#e2e8f0;flex:1;margin-right:8px;
+                                 white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${name}</span>
+                    <span style="font-size:0.78em;font-weight:700;color:#f59e0b;
+                                 white-space:nowrap;">${count} นัด</span>
+                </div>
+                <div style="background:#1e1e35;border-radius:4px;height:6px;overflow:hidden;">
+                    <div style="width:${pct}%;height:100%;
+                                background:linear-gradient(90deg,#f59e0b,#fbbf24);
+                                border-radius:4px;transition:width 0.3s;"></div>
+                </div>
+            </div>`;
+    }).join('');
+
+    return `
+        <div style="background:#12122a;border:1px solid rgba(245,158,11,0.3);
+                    border-radius:10px;padding:12px 14px;margin-bottom:10px;">
+            <div style="font-size:0.72em;font-weight:700;color:#f59e0b;
+                        letter-spacing:1.5px;text-transform:uppercase;margin-bottom:10px;">
+                📋 P2 Leads — ความสนใจ (${p2Rows.length} นัด)
+            </div>
+            ${bars}
+        </div>`;
+}
+
 function showDailyAdsModal(dayData) {
     const C       = CONFIG.COLUMN_NAMES;
     const dateStr = normalizeDateStr(dayData.date);
@@ -745,6 +772,9 @@ function showDailyAdsModal(dayData) {
     const sectionLabel = (text) => `
         <div style="font-size:0.7em;font-weight:700;color:#555;letter-spacing:1.5px;
                     text-transform:uppercase;margin:14px 0 6px 2px;">${text}</div>`;
+
+    // ── สร้าง P2 Interest Summary (ใหม่) ──
+    const p2InterestSummaryHtml = buildP2InterestSummary(p2Rows);
 
     let html = `
     <div id="dailyModalExportArea"
@@ -801,6 +831,9 @@ function showDailyAdsModal(dayData) {
             ${kpiCard('#3b82f6', formatCurrency(avgPerHead),   '👤 Avg / Head')}
             ${kpiCard('#a855f7', roas + 'x',                   '📈 ROAS')}
         </div>
+
+        <!-- ══ SECTION 4: P2 INTEREST SUMMARY (ใหม่) ══ -->
+        ${p2Rows.length > 0 ? sectionLabel('📋 P2 Leads Interest Summary') + p2InterestSummaryHtml : ''}
 
         <!-- ── Bill tables ── -->
         ${buildDailyBillTables(p1Rows, up1Rows, p2Rows, up2Rows)}
@@ -893,14 +926,15 @@ function buildDailyBillTables(p1Rows, up1Rows, p2Rows, up2Rows) {
         </div>`;
     }
 
-    // P2 Leads
+    // P2 Leads — เพิ่มคอลัมน์ "ความสนใจ (P2)" และ "Channel"
     if (p2Rows.length > 0) {
         html += `
         <div class="type-section">
             <div class="type-title">📋 P2 Leads <span class="type-badge">${p2Rows.length} items</span></div>
             <div class="scrollable-table"><table>
                 <thead><tr>
-                    <th>Date</th><th>Customer</th><th>Channel</th><th>Tel</th><th>Interest</th>
+                    <th>Date</th><th>Customer</th><th>Channel</th><th>Tel</th>
+                    <th>ความสนใจ (P2)</th><th>รายการที่สนใจ</th>
                 </tr></thead>
                 <tbody>
                 ${p2Rows.map(r => `<tr>
@@ -908,7 +942,8 @@ function buildDailyBillTables(p1Rows, up1Rows, p2Rows, up2Rows) {
                     <td>${r[C.CUSTOMER] || '-'}</td>
                     <td>${r[C.CHANNEL]  || '-'}</td>
                     <td style="color:#a0a0b0;font-size:0.85em;">${r[C.PHONE] || '-'}</td>
-                    <td><small>${r[C.P2] || '-'}</small></td>
+                    <td><span style="color:#f59e0b;font-weight:600;">${r[C.P2] || '-'}</span></td>
+                    <td><small style="color:#a0a0b0;">${r[C.INTEREST] || '-'}</small></td>
                 </tr>`).join('')}
                 </tbody>
             </table></div>
@@ -1282,7 +1317,6 @@ document.addEventListener('DOMContentLoaded', () => {
     main();
 
     ui.refreshBtn.addEventListener('click', () => {
-        // ล้าง cache เพื่อโหลดข้อมูลใหม่
         allSalesDataCache = [];
         main();
     });
