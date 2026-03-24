@@ -393,7 +393,7 @@ function updateCategoryChart(cats) {
 }
 
 // ================================================================
-// 6b. DAILY SPEND CHART  (พร้อม empty-state เมื่อไม่มีข้อมูล)
+// 6b. DAILY SPEND CHART
 // ================================================================
 function renderDailySpendChart(dailyData) {
     const canvas = document.getElementById('dailySpendChart');
@@ -405,12 +405,11 @@ function renderDailySpendChart(dailyData) {
         charts.line = null;
     }
 
-    // กรองเฉพาะวันที่มี spend > 0
-    const filteredData = (dailyData || []).filter(d => toNumber(d.spend) > 0);
+    // ✅ ไม่กรองทิ้งวันที่ spend = 0 — เก็บไว้ทุกวัน
+    const allData = (dailyData || []);
 
-    // ── EMPTY STATE ─────────────────────────────────────────────
-    if (filteredData.length === 0) {
-        // ต้อง sync ขนาด canvas ให้ตรงกับ CSS จริง ๆ ก่อนวาด
+    // ── EMPTY STATE: ไม่มีข้อมูลวันไหนเลย ───────────────────────
+    if (allData.length === 0) {
         const rect = canvas.getBoundingClientRect();
         const w = rect.width  || canvas.offsetWidth  || 600;
         const h = rect.height || canvas.offsetHeight || 200;
@@ -430,20 +429,14 @@ function renderDailySpendChart(dailyData) {
         const gridLines = 5;
         for (let i = 1; i < gridLines; i++) {
             const y = (h / gridLines) * i;
-            ctx.beginPath();
-            ctx.moveTo(0, y);
-            ctx.lineTo(w, y);
-            ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
         }
 
         // เส้น grid แนวตั้ง
         const vLines = 8;
         for (let i = 1; i < vLines; i++) {
             const x = (w / vLines) * i;
-            ctx.beginPath();
-            ctx.moveTo(x, 0);
-            ctx.lineTo(x, h);
-            ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
         }
 
         // เส้นแนวโน้ม placeholder (คลื่นจาง)
@@ -492,24 +485,32 @@ function renderDailySpendChart(dailyData) {
         return;
     }
 
-    // ── NORMAL CHART ─────────────────────────────────────────────
+    // ── NORMAL CHART (รวมวันที่ spend = 0 ด้วย) ──────────────────
+    // 🟡 จุดสีเหลือง + ขนาดใหญ่กว่า = วันที่ไม่มี spend แต่คลิกดูบิลได้
+    const pointColors = allData.map(d =>
+        toNumber(d.spend) === 0 ? '#facc15' : '#ff00f2'
+    );
+    const pointRadii = allData.map(d =>
+        toNumber(d.spend) === 0 ? 7 : 5
+    );
+
     charts.line = new Chart(ctx, {
         type: 'line',
         data: {
-            labels: filteredData.map(d => {
+            labels: allData.map(d => {
                 const date = new Date(d.date);
                 return `${date.getDate()}/${date.getMonth() + 1}`;
             }),
             datasets: [{
                 label: 'Ad Spend (THB)',
-                data: filteredData.map(d => d.spend),
+                data: allData.map(d => toNumber(d.spend)),
                 borderColor: '#ff00f2',
                 backgroundColor: 'rgba(255, 0, 242, 0.1)',
                 fill: true,
                 tension: 0.3,
-                pointRadius: 5,
-                pointHoverRadius: 8,
-                pointBackgroundColor: '#ff00f2',
+                pointRadius: pointRadii,
+                pointHoverRadius: 9,
+                pointBackgroundColor: pointColors,
                 pointBorderColor: '#fff',
                 pointBorderWidth: 2
             }]
@@ -520,7 +521,7 @@ function renderDailySpendChart(dailyData) {
             onClick: (evt, elements) => {
                 if (elements.length > 0) {
                     const idx     = elements[0].index;
-                    const dayData = filteredData[idx];
+                    const dayData = allData[idx];
                     if (dayData) showDailyAdsModal(dayData);
                 }
             },
@@ -535,7 +536,15 @@ function renderDailySpendChart(dailyData) {
             plugins: {
                 legend: { display: false },
                 tooltip: {
-                    callbacks: { footer: () => '👆 คลิกเพื่อดูรายละเอียดวันนี้' }
+                    callbacks: {
+                        label: (context) => {
+                            const val = context.parsed.y;
+                            return val === 0
+                                ? '💸 ไม่มี Spend วันนี้ — คลิกดูบิล'
+                                : `Ad Spend: ${formatCurrency(val)}`;
+                        },
+                        footer: () => '👆 คลิกเพื่อดูรายละเอียดวันนี้'
+                    }
                 }
             }
         }
@@ -1356,7 +1365,6 @@ async function main() {
             latestAdsTotals      = {};
             latestDailySpendData = [];
             document.getElementById('adsStatsGrid').innerHTML = '<p style="color:var(--text-secondary);">Unable to load Ads data.</p>';
-            // แสดง empty-state chart แม้ API จะ fail
             renderDailySpendChart([]);
         }
 
