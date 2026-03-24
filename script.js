@@ -392,38 +392,156 @@ function updateCategoryChart(cats) {
     });
 }
 
-// ── [FIX 1] กรองวันที่ spend = 0 ออกก่อน render กราฟ ────────────
+// ================================================================
+// 6b. DAILY SPEND CHART  (พร้อม empty-state เมื่อไม่มีข้อมูล)
+// ================================================================
 function renderDailySpendChart(dailyData) {
-    const ctx = document.getElementById('dailySpendChart').getContext('2d');
-    if (charts.line) charts.line.destroy();
+    const canvas = document.getElementById('dailySpendChart');
+    const ctx    = canvas.getContext('2d');
+
+    // ทำลาย chart เดิมก่อนเสมอ
+    if (charts.line) {
+        charts.line.destroy();
+        charts.line = null;
+    }
 
     // กรองเฉพาะวันที่มี spend > 0
-    const filteredData = dailyData.filter(d => toNumber(d.spend) > 0);
+    const filteredData = (dailyData || []).filter(d => toNumber(d.spend) > 0);
 
+    // ── EMPTY STATE ─────────────────────────────────────────────
+    if (filteredData.length === 0) {
+        // ต้อง sync ขนาด canvas ให้ตรงกับ CSS จริง ๆ ก่อนวาด
+        const rect = canvas.getBoundingClientRect();
+        const w = rect.width  || canvas.offsetWidth  || 600;
+        const h = rect.height || canvas.offsetHeight || 200;
+        canvas.width  = w * window.devicePixelRatio;
+        canvas.height = h * window.devicePixelRatio;
+        ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+
+        ctx.clearRect(0, 0, w, h);
+
+        // พื้นหลังจางๆ
+        ctx.fillStyle = 'rgba(255,0,242,0.03)';
+        ctx.fillRect(0, 0, w, h);
+
+        // เส้น grid แนวนอน
+        ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+        ctx.lineWidth   = 1;
+        const gridLines = 5;
+        for (let i = 1; i < gridLines; i++) {
+            const y = (h / gridLines) * i;
+            ctx.beginPath();
+            ctx.moveTo(0, y);
+            ctx.lineTo(w, y);
+            ctx.stroke();
+        }
+
+        // เส้น grid แนวตั้ง
+        const vLines = 8;
+        for (let i = 1; i < vLines; i++) {
+            const x = (w / vLines) * i;
+            ctx.beginPath();
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, h);
+            ctx.stroke();
+        }
+
+        // เส้นแนวโน้ม placeholder (คลื่นจาง)
+        ctx.beginPath();
+        ctx.strokeStyle = 'rgba(255,0,242,0.12)';
+        ctx.lineWidth   = 2;
+        for (let x = 0; x <= w; x += 2) {
+            const y = h / 2 + Math.sin((x / w) * Math.PI * 3) * (h * 0.15);
+            x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+
+        // วงกลม icon background
+        const cx = w / 2;
+        const cy = h / 2 - 18;
+        const r  = Math.min(w, h) * 0.1;
+        const gradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+        gradient.addColorStop(0, 'rgba(255,0,242,0.25)');
+        gradient.addColorStop(1, 'rgba(255,0,242,0.00)');
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.fill();
+
+        // icon 📉
+        ctx.font      = `${Math.max(18, Math.min(28, h * 0.18))}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = 'rgba(255,0,242,0.85)';
+        ctx.fillText('📉', cx, cy);
+
+        // ข้อความหลัก
+        const fontSize1 = Math.max(11, Math.min(14, h * 0.08));
+        ctx.font      = `600 ${fontSize1}px sans-serif`;
+        ctx.fillStyle = '#c0c0d0';
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillText('ไม่มีข้อมูล Ad Spend ในช่วงเวลานี้', cx, cy + r + 16);
+
+        // ข้อความรอง
+        const fontSize2 = Math.max(9, Math.min(11, h * 0.065));
+        ctx.font      = `${fontSize2}px sans-serif`;
+        ctx.fillStyle = '#666680';
+        ctx.fillText('ลองเปลี่ยนช่วงวันที่แล้วกด Refresh', cx, cy + r + 34);
+
+        canvas.style.cursor = 'default';
+        return;
+    }
+
+    // ── NORMAL CHART ─────────────────────────────────────────────
     charts.line = new Chart(ctx, {
         type: 'line',
         data: {
-            labels: filteredData.map(d => { const date = new Date(d.date); return `${date.getDate()}/${date.getMonth() + 1}`; }),
-            datasets: [{ label: 'Ad Spend (THB)', data: filteredData.map(d => d.spend), borderColor: '#ff00f2', backgroundColor: 'rgba(255, 0, 242, 0.1)', fill: true, tension: 0.3, pointRadius: 5, pointHoverRadius: 8, pointBackgroundColor: '#ff00f2', pointBorderColor: '#fff', pointBorderWidth: 2 }]
+            labels: filteredData.map(d => {
+                const date = new Date(d.date);
+                return `${date.getDate()}/${date.getMonth() + 1}`;
+            }),
+            datasets: [{
+                label: 'Ad Spend (THB)',
+                data: filteredData.map(d => d.spend),
+                borderColor: '#ff00f2',
+                backgroundColor: 'rgba(255, 0, 242, 0.1)',
+                fill: true,
+                tension: 0.3,
+                pointRadius: 5,
+                pointHoverRadius: 8,
+                pointBackgroundColor: '#ff00f2',
+                pointBorderColor: '#fff',
+                pointBorderWidth: 2
+            }]
         },
         options: {
-            responsive: true, maintainAspectRatio: false,
+            responsive: true,
+            maintainAspectRatio: false,
             onClick: (evt, elements) => {
                 if (elements.length > 0) {
-                    const idx = elements[0].index;
+                    const idx     = elements[0].index;
                     const dayData = filteredData[idx];
                     if (dayData) showDailyAdsModal(dayData);
                 }
             },
-            scales: { y: { beginAtZero: true, ticks: { color: '#a0a0b0' }, grid: { color: 'rgba(255,255,255,0.1)' } }, x: { ticks: { color: '#a0a0b0' } } },
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    ticks: { color: '#a0a0b0' },
+                    grid: { color: 'rgba(255,255,255,0.1)' }
+                },
+                x: { ticks: { color: '#a0a0b0' } }
+            },
             plugins: {
                 legend: { display: false },
-                tooltip: { callbacks: { footer: () => '👆 คลิกเพื่อดูรายละเอียดวันนี้' } }
-            },
-            cursor: 'pointer'
+                tooltip: {
+                    callbacks: { footer: () => '👆 คลิกเพื่อดูรายละเอียดวันนี้' }
+                }
+            }
         }
     });
-    document.getElementById('dailySpendChart').style.cursor = 'pointer';
+
+    canvas.style.cursor = 'pointer';
 }
 
 // ================================================================
@@ -725,8 +843,6 @@ function showDailyAdsModal(dayData) {
         <div style="font-size:0.7em;font-weight:700;color:#555;letter-spacing:1.5px;
                     text-transform:uppercase;margin:14px 0 6px 2px;">${text}</div>`;
 
-    // ── [FIX 2] ลบ P2 Interest Summary section ออกทั้งหมด ──
-
     let html = `
     <div id="dailyModalExportArea"
          style="background:#0f0f1a;padding:18px 16px;border-radius:12px;">
@@ -874,7 +990,7 @@ function buildDailyBillTables(p1Rows, up1Rows, p2Rows, up2Rows) {
         </div>`;
     }
 
-    // ── [FIX 3] P2 Leads — ลบคอลัมน์ "ความสนใจ (P2)" ออก เหลือแค่ "รายการที่สนใจ" ──
+    // P2 Leads
     if (p2Rows.length > 0) {
         html += `
         <div class="type-section">
@@ -1237,8 +1353,11 @@ async function main() {
             updateCampaignsTable();
             renderDailySpendChart(latestDailySpendData);
         } else {
-            latestAdsTotals = {};
+            latestAdsTotals      = {};
+            latestDailySpendData = [];
             document.getElementById('adsStatsGrid').innerHTML = '<p style="color:var(--text-secondary);">Unable to load Ads data.</p>';
+            // แสดง empty-state chart แม้ API จะ fail
+            renderDailySpendChart([]);
         }
 
         renderSalesStats(salesRes);
