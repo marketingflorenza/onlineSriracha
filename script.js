@@ -392,21 +392,26 @@ function updateCategoryChart(cats) {
     });
 }
 
+// ── [FIX 1] กรองวันที่ spend = 0 ออกก่อน render กราฟ ────────────
 function renderDailySpendChart(dailyData) {
     const ctx = document.getElementById('dailySpendChart').getContext('2d');
     if (charts.line) charts.line.destroy();
+
+    // กรองเฉพาะวันที่มี spend > 0
+    const filteredData = dailyData.filter(d => toNumber(d.spend) > 0);
+
     charts.line = new Chart(ctx, {
         type: 'line',
         data: {
-            labels: dailyData.map(d => { const date = new Date(d.date); return `${date.getDate()}/${date.getMonth() + 1}`; }),
-            datasets: [{ label: 'Ad Spend (THB)', data: dailyData.map(d => d.spend), borderColor: '#ff00f2', backgroundColor: 'rgba(255, 0, 242, 0.1)', fill: true, tension: 0.3, pointRadius: 5, pointHoverRadius: 8, pointBackgroundColor: '#ff00f2', pointBorderColor: '#fff', pointBorderWidth: 2 }]
+            labels: filteredData.map(d => { const date = new Date(d.date); return `${date.getDate()}/${date.getMonth() + 1}`; }),
+            datasets: [{ label: 'Ad Spend (THB)', data: filteredData.map(d => d.spend), borderColor: '#ff00f2', backgroundColor: 'rgba(255, 0, 242, 0.1)', fill: true, tension: 0.3, pointRadius: 5, pointHoverRadius: 8, pointBackgroundColor: '#ff00f2', pointBorderColor: '#fff', pointBorderWidth: 2 }]
         },
         options: {
             responsive: true, maintainAspectRatio: false,
             onClick: (evt, elements) => {
                 if (elements.length > 0) {
                     const idx = elements[0].index;
-                    const dayData = latestDailySpendData[idx];
+                    const dayData = filteredData[idx];
                     if (dayData) showDailyAdsModal(dayData);
                 }
             },
@@ -680,59 +685,6 @@ function processDailyAdsSales(dateStr) {
     return { dayRows, p1Bills, p1Revenue, p2Leads, up1Bills, up1Revenue, up2Bills, up2Revenue, totalRevenue, totalCustomers };
 }
 
-// ================================================================
-// 7c. NEW: P2 Interest Summary Builder
-// ── นับความถี่ของแต่ละ interest จาก P2 Rows แล้วสร้าง HTML summary
-// ================================================================
-function buildP2InterestSummary(p2Rows) {
-    const C = CONFIG.COLUMN_NAMES;
-    if (!p2Rows || p2Rows.length === 0) return '';
-
-    // นับความถี่ interest จาก column P2
-    const interestCount = {};
-    p2Rows.forEach(r => {
-        const interest = String(r[C.P2] || '').trim();
-        if (interest === '') return;
-        // บาง interest อาจมีหลายรายการคั่นด้วย comma
-        const items = interest.split(',').map(s => s.trim()).filter(s => s !== '');
-        items.forEach(item => {
-            interestCount[item] = (interestCount[item] || 0) + 1;
-        });
-    });
-
-    const sorted = Object.entries(interestCount).sort((a, b) => b[1] - a[1]);
-    if (sorted.length === 0) return '';
-
-    const bars = sorted.map(([name, count]) => {
-        const maxCount = sorted[0][1];
-        const pct = Math.round((count / maxCount) * 100);
-        return `
-            <div style="margin-bottom:6px;">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
-                    <span style="font-size:0.78em;color:#e2e8f0;flex:1;margin-right:8px;
-                                 white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${name}</span>
-                    <span style="font-size:0.78em;font-weight:700;color:#f59e0b;
-                                 white-space:nowrap;">${count} นัด</span>
-                </div>
-                <div style="background:#1e1e35;border-radius:4px;height:6px;overflow:hidden;">
-                    <div style="width:${pct}%;height:100%;
-                                background:linear-gradient(90deg,#f59e0b,#fbbf24);
-                                border-radius:4px;transition:width 0.3s;"></div>
-                </div>
-            </div>`;
-    }).join('');
-
-    return `
-        <div style="background:#12122a;border:1px solid rgba(245,158,11,0.3);
-                    border-radius:10px;padding:12px 14px;margin-bottom:10px;">
-            <div style="font-size:0.72em;font-weight:700;color:#f59e0b;
-                        letter-spacing:1.5px;text-transform:uppercase;margin-bottom:10px;">
-                📋 P2 Leads — ความสนใจ (${p2Rows.length} นัด)
-            </div>
-            ${bars}
-        </div>`;
-}
-
 function showDailyAdsModal(dayData) {
     const C       = CONFIG.COLUMN_NAMES;
     const dateStr = normalizeDateStr(dayData.date);
@@ -773,8 +725,7 @@ function showDailyAdsModal(dayData) {
         <div style="font-size:0.7em;font-weight:700;color:#555;letter-spacing:1.5px;
                     text-transform:uppercase;margin:14px 0 6px 2px;">${text}</div>`;
 
-    // ── สร้าง P2 Interest Summary (ใหม่) ──
-    const p2InterestSummaryHtml = buildP2InterestSummary(p2Rows);
+    // ── [FIX 2] ลบ P2 Interest Summary section ออกทั้งหมด ──
 
     let html = `
     <div id="dailyModalExportArea"
@@ -831,9 +782,6 @@ function showDailyAdsModal(dayData) {
             ${kpiCard('#3b82f6', formatCurrency(avgPerHead),   '👤 Avg / Head')}
             ${kpiCard('#a855f7', roas + 'x',                   '📈 ROAS')}
         </div>
-
-        <!-- ══ SECTION 4: P2 INTEREST SUMMARY (ใหม่) ══ -->
-        ${p2Rows.length > 0 ? sectionLabel('📋 P2 Leads Interest Summary') + p2InterestSummaryHtml : ''}
 
         <!-- ── Bill tables ── -->
         ${buildDailyBillTables(p1Rows, up1Rows, p2Rows, up2Rows)}
@@ -926,7 +874,7 @@ function buildDailyBillTables(p1Rows, up1Rows, p2Rows, up2Rows) {
         </div>`;
     }
 
-    // P2 Leads — เพิ่มคอลัมน์ "ความสนใจ (P2)" และ "Channel"
+    // ── [FIX 3] P2 Leads — ลบคอลัมน์ "ความสนใจ (P2)" ออก เหลือแค่ "รายการที่สนใจ" ──
     if (p2Rows.length > 0) {
         html += `
         <div class="type-section">
@@ -934,7 +882,7 @@ function buildDailyBillTables(p1Rows, up1Rows, p2Rows, up2Rows) {
             <div class="scrollable-table"><table>
                 <thead><tr>
                     <th>Date</th><th>Customer</th><th>Channel</th><th>Tel</th>
-                    <th>ความสนใจ (P2)</th><th>รายการที่สนใจ</th>
+                    <th>รายการที่สนใจ</th>
                 </tr></thead>
                 <tbody>
                 ${p2Rows.map(r => `<tr>
@@ -942,7 +890,6 @@ function buildDailyBillTables(p1Rows, up1Rows, p2Rows, up2Rows) {
                     <td>${r[C.CUSTOMER] || '-'}</td>
                     <td>${r[C.CHANNEL]  || '-'}</td>
                     <td style="color:#a0a0b0;font-size:0.85em;">${r[C.PHONE] || '-'}</td>
-                    <td><span style="color:#f59e0b;font-weight:600;">${r[C.P2] || '-'}</span></td>
                     <td><small style="color:#a0a0b0;">${r[C.INTEREST] || '-'}</small></td>
                 </tr>`).join('')}
                 </tbody>
