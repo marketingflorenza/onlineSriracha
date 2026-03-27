@@ -229,23 +229,47 @@ function processSalesData(rows, startDate, endDate) {
             channels[ch].revenue    += rev;
             channels[ch].up2Revenue += up2;
 
+            let isOldCustomerForCat = false;
+            if (p1 > 0 || up2 > 0) {
+                isOldCustomerForCat = hasPaidHistory(custName, custPhone, historyData);
+            }
+
             const cats = String(row[C.CATEGORIES] || '').split(',').map(s => s.trim()).filter(s => s && s !== '999');
             cats.forEach(cat => {
-                if (!categories[cat]) categories[cat] = { name: cat, total: 0, p1B: 0, up1B: 0, up2B: 0, p1Val: 0, up1Val: 0, up2Val: 0 };
+                // อัปเดตโครงสร้างเริ่มต้น ให้รองรับการเก็บ Set ลูกค้า (กันนับซ้ำ) และตัวนับลูกค้า
+                if (!categories[cat]) categories[cat] = { 
+                    name: cat, total: 0, p1B: 0, up1B: 0, up2B: 0, p1Val: 0, up1Val: 0, up2Val: 0,
+                    custSet: new Set(), newCust: 0, oldCust: 0
+                };
+                
                 const count = cats.length || 1;
                 categories[cat].total  += rev / count;
                 categories[cat].p1Val  += p1  / count;
                 categories[cat].up1Val += up1 / count;
                 categories[cat].up2Val += up2 / count;
+                
                 if (p1  > 0) categories[cat].p1B++;
                 if (up1 > 0) categories[cat].up1B++;
                 if (up2 > 0) categories[cat].up2B++;
+
+                // เพิ่มลอจิกนับจำนวนลูกค้าแยกเก่า-ใหม่ แบบไม่ซ้ำคน (Unique)
+                if (p1 > 0 || up2 > 0) {
+                    if (!categories[cat].custSet.has(custKey)) {
+                        categories[cat].custSet.add(custKey); // เก็บ key ลูกค้าไว้ เพื่อครั้งหน้าจะได้ไม่นับซ้ำ
+                        if (isOldCustomerForCat) {
+                            categories[cat].oldCust++;
+                        } else {
+                            categories[cat].newCust++;
+                        }
+                    }
+                }
             });
         }
     });
 
     summary.totalBills = summary.p1Bills + summary.p2Leads;
 
+    // คืนค่า categories ออกไปเหมือนเดิม (คุณสามารถเอา newCust, oldCust ไปรวมกันเพื่อหา Total Customers ได้เลยตอน Render)
     return { summary, channels, categories: Object.values(categories).sort((a, b) => b.total - a.total), filteredRows };
 }
 
@@ -406,16 +430,22 @@ function renderSalesStats(data) {
         </div>
     `;
 
-    const sortedChannels = Object.entries(data.channels).sort((a, b) => b[1].revenue - a[1].revenue);
-    document.getElementById('channelTableBody').innerHTML = sortedChannels.map(([name, val]) => `
-        <tr class="clickable-row" onclick="showChannelDetails('${name.replace(/'/g, "\\'")}')">
-            <td><strong>${name}</strong></td><td>${formatNumber(val.p1)}</td><td>${formatNumber(val.p2)}</td><td>${formatNumber(val.upP2)}</td><td class="revenue-cell">${formatCurrency(val.revenue)}</td>
-        </tr>`).join('');
-
-    document.getElementById('categoryTableBody').innerHTML = data.categories.map((c, i) => `
+    document.getElementById('categoryTableBody').innerHTML = data.categories.map((c, i) => {
+        const totalCust = c.newCust + c.oldCust;
+        return `
         <tr class="clickable-row" onclick="showCategoryDetails('${c.name.replace(/'/g, "\\'")}')">
-            <td style="text-align:center;"><span class="type-badge">${i + 1}</span></td><td><strong>${c.name}</strong></td><td>${formatNumber(c.p1B)}</td><td>${formatNumber(c.up1B)}</td><td>${formatNumber(c.up2B)}</td><td class="revenue-cell">${formatCurrency(c.total)}</td>
-        </tr>`).join('');
+            <td style="text-align:center;"><span class="type-badge">${i + 1}</span></td>
+            <td><strong>${c.name}</strong></td>
+            <td>${formatNumber(c.p1B)}<br><span style="font-size:0.85em; color:#34d399;">${formatCurrency(c.p1Val)}</span></td>
+            <td>${formatNumber(c.up1B)}<br><span style="font-size:0.85em; color:#ec4899;">${formatCurrency(c.up1Val)}</span></td>
+            <td>${formatNumber(c.up2B)}<br><span style="font-size:0.85em; color:#f59e0b;">${formatCurrency(c.up2Val)}</span></td>
+            
+            <td style="color:#60a5fa; font-weight:600;">${formatNumber(totalCust)}</td>
+            <td style="color:#a855f7;">${formatNumber(c.oldCust)}</td>
+            <td style="color:#34d399;">${formatNumber(c.newCust)}</td>
+            <td class="revenue-cell">${formatCurrency(c.total)}</td>
+        </tr>`;
+    }).join('');
 
     updateCategoryChart(data.categories);
 }
